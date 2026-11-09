@@ -119,7 +119,7 @@ export class GlpiOAuthProvider implements OAuthServerProvider {
   /** Encrypt and authenticate the authorization request into one form field (AES-256-GCM). */
   sealRequest(p: PendingAuthorization): string {
     const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", this.formKey, iv);
+    const cipher = createCipheriv("aes-256-gcm", this.formKey, iv, { authTagLength: 16 });
     const data = Buffer.concat([cipher.update(JSON.stringify(p), "utf8"), cipher.final()]);
     return Buffer.concat([iv, cipher.getAuthTag(), data]).toString("base64url");
   }
@@ -129,7 +129,7 @@ export class GlpiOAuthProvider implements OAuthServerProvider {
     try {
       const raw = Buffer.from(String(sealed), "base64url");
       if (raw.length < 29) throw new Error("short");
-      const decipher = createDecipheriv("aes-256-gcm", this.formKey, raw.subarray(0, 12));
+      const decipher = createDecipheriv("aes-256-gcm", this.formKey, raw.subarray(0, 12), { authTagLength: 16 });
       decipher.setAuthTag(raw.subarray(12, 28));
       p = JSON.parse(Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString("utf8"));
     } catch {

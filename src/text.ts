@@ -94,9 +94,12 @@ export function safeHref(href: string | undefined): string | undefined {
   return ["http", "https", "mailto"].includes(scheme) ? value : undefined;
 }
 
+/** Value of one attribute of an HTML tag (fixed pattern; the name is compared, not compiled). */
 function attr(tag: string, name: string): string | undefined {
-  const m = tag.match(new RegExp(`\\s${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"));
-  return m ? (m[2] ?? m[3] ?? m[4]) : undefined;
+  for (const m of tag.matchAll(/\s([a-z][a-z0-9-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+    if (m[1].toLowerCase() === name) return m[2] ?? m[3] ?? m[4];
+  }
+  return undefined;
 }
 
 /** Convert GLPI HTML to readable text, keeping links, lists, line breaks and image references. */

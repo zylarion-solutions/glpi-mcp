@@ -90,7 +90,7 @@ export class OAuthStore {
     const data = raw.subarray(28);
     let snap: Snapshot;
     try {
-      const decipher = createDecipheriv("aes-256-gcm", this.key, iv);
+      const decipher = createDecipheriv("aes-256-gcm", this.key, iv, { authTagLength: 16 });
       decipher.setAuthTag(tag);
       snap = JSON.parse(Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8")) as Snapshot;
     } catch {
@@ -131,7 +131,7 @@ export class OAuthStore {
       rotated: Object.fromEntries(this.rotated),
     };
     const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", this.key, iv);
+    const cipher = createCipheriv("aes-256-gcm", this.key, iv, { authTagLength: 16 });
     const data = Buffer.concat([cipher.update(JSON.stringify(snap), "utf8"), cipher.final()]);
     const tmp = `${this.file}.tmp`;
     // Recreate the temp file so it always gets 0600, and flush it before the atomic rename.
