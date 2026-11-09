@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LegacyBackend, cleanCell } from "../src/glpi/legacy.js";
+import { LegacyBackend, cleanCell, stripTags } from "../src/glpi/legacy.js";
 import { toPhpQuery } from "../src/glpi/http.js";
 import { config, mockFetch } from "./helpers.js";
 
@@ -19,6 +19,13 @@ describe("cleanCell", () => {
     expect(cleanCell('<a href="x">Juan</a>$$$$Ana')).toBe("Juan, Ana");
     expect(cleanCell(["a", "b"])).toBe("a, b");
     expect(cleanCell("")).toBeUndefined();
+  });
+
+  it("never leaves a tag rebuilt from nested pieces", () => {
+    expect(stripTags("<scr<script>ipt>alert(1)</script>")).toBe("alert(1)");
+    expect(stripTags("<<b>script>x")).toBe("x");
+    expect(stripTags("a > b < c")).toBe("a  b  c");
+    expect(cleanCell('<a href="/front/user.form.php?id=3">Mario</a>')).toBe("Mario");
   });
 });
 
