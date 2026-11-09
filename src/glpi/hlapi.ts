@@ -8,8 +8,22 @@
  * majors (2.x on GLPI 11, 3.x on GLPI 12).
  */
 import type { Config } from "../config.js";
+import { excerpt, htmlToText, textifyRecord } from "../text.js";
 import { GlpiApiError, httpRequest, toPhpQuery, totalFromContentRange, type FetchLike } from "./http.js";
+import { keywords, scoreText } from "./similar.js";
 import {
+  UnsupportedFeatureError,
+  type DocumentInfo,
+  type DownloadedDocument,
+  type QueueQuery,
+  type SessionInfo,
+  type SimilarHit,
+  type SimilarQuery,
+  type SlaItem,
+  type SlaQuery,
+  type StatsQuery,
+  type ValidationDecision,
+  type ValidationItem,
   label,
   PRIORITY_LABELS,
   STATUS_LABELS,
@@ -270,15 +284,21 @@ export class HlapiBackend implements GlpiBackend {
   async getItil(itilType: ItilType, id: number): Promise<unknown> {
     const { body } = await this.request<Record<string, unknown>>("GET", `${hlapiPath(itilType)}/${id}`);
     return {
-      ...body,
+      ...textifyRecord(body),
       status_label: label(STATUS_LABELS, body?.status),
       priority_label: label(PRIORITY_LABELS, body?.priority),
     };
   }
 
   async getItilTimeline(itilType: ItilType, id: number): Promise<unknown> {
-    const { body } = await this.request("GET", `${hlapiPath(itilType)}/${id}/Timeline`);
-    return { itil_type: itilType, id, entries: body };
+    const { body } = await this.request<unknown[]>("GET", `${hlapiPath(itilType)}/${id}/Timeline`);
+    const entries = Array.isArray(body)
+      ? body.map((e) => {
+          const entry = e as Record<string, unknown>;
+          return entry.item && typeof entry.item === "object" ? { ...entry, item: textifyRecord(entry.item) } : textifyRecord(entry);
+        })
+      : body;
+    return { itil_type: itilType, id, entries };
   }
 
   async getItilTeam(itilType: ItilType, id: number): Promise<unknown> {
@@ -426,6 +446,102 @@ export class HlapiBackend implements GlpiBackend {
     if (clean.includes("..")) throw new Error("Invalid path");
     const res = await this.request("GET", clean, { query });
     return { status: res.status, total: totalFromContentRange(res.headers), body: res.body };
+  }
+
+  // --- Experience features. The High-Level API covers fewer of them; the tool
+  // layer retries on the legacy API when legacy credentials are configured.
+
+  async session(): Promise<SessionInfo> {
+    const { body } = await this.request<Record<string, unknown>>("GET", "Administration/User/Me");
+    const name = [body?.firstname, body?.realname].filter(Boolean).join(" ").trim();
+    return {
+      userId: Number(body?.id),
+      login: (body?.username ?? body?.name) as string | undefined,
+      name: name || undefined,
+      groupIds: [],
+    };
+  }
+
+  async myQueue(_q: QueueQuery): Promise<Page<ItilSummary>> {
+    throw new UnsupportedFeatureError("Filtering by assigned technician or group");
+  }
+
+  async slaAtRisk(_q: SlaQuery): Promise<{ overdue: SlaItem[]; due_soon: SlaItem[]; window_hours: number }> {
+    throw new UnsupportedFeatureError("SLA due dates");
+  }
+
+  async findSimilar(q: SimilarQuery): Promise<SimilarHit[]> {
+    const terms = keywords(q.text);
+    if (!terms.length) throw new Error("The text has no searchable words; describe the problem in more detail");
+    const anyTerm = (fields: string[]) =>
+      `(${terms.flatMap((t) => fields.map((f) => `${f}=ilike=${rsqlValue(`*${t}*`)}`)).join(",")})`;
+    const pool = Math.min(50, q.limit * 5);
+    const hits: SimilarHit[] = [];
+    const list = async (path: string, filter: string) => {
+      const res = await this.request<Record<string, unknown>[]>("GET", path, { query: { filter, start: 0, limit: pool } });
+      return Array.isArray(res.body) ? res.body : [];
+    };
+    if (q.includeKb) {
+      for (const r of await list(hlapiPath("KnowbaseItem"), anyTerm(["name", "content"]))) {
+        const name = String(r.name ?? "");
+        const body = htmlToText(r.content ?? r.answer);
+        hits.push({ kind: "kb_article", id: Number(r.id), name, score: scoreText(terms, name, body), excerpt: excerpt(body) });
+      }
+    }
+    const tickets = async (status: string, kind: SimilarHit["kind"]) => {
+      for (const r of await list(hlapiPath("Ticket"), `${status};${anyTerm(["name", "content"])}`)) {
+        const name = String(r.name ?? "");
+        const body = htmlToText(r.content);
+        hits.push({
+          kind,
+          id: Number(r.id),
+          name,
+          score: scoreText(terms, name, body),
+          status: label(STATUS_LABELS, r.status),
+          date: (r.date_creation ?? r.date) as string | undefined,
+          excerpt: excerpt(body),
+        });
+      }
+    };
+    if (q.includeOpen) await tickets("status.id=out=(5,6)", "open_ticket");
+    if (q.includeSolved) await tickets("status.id=in=(5,6)", "solved_ticket");
+    return hits.filter((h) => h.score > 0).sort((a, b) => b.score - a.score).slice(0, q.limit);
+  }
+
+  async listDocuments(_itemtype: string, _id: number): Promise<DocumentInfo[]> {
+    throw new UnsupportedFeatureError("Listing attachments");
+  }
+
+  async downloadDocument(_id: number, _maxBytes: number): Promise<DownloadedDocument> {
+    throw new UnsupportedFeatureError("Downloading attachments");
+  }
+
+  async uploadDocument(_itemtype: string, _id: number, _f: string, _m: string, _b: Buffer): Promise<unknown> {
+    throw new UnsupportedFeatureError("Uploading attachments");
+  }
+
+  async listPendingValidations(_itilType: ItilType, _limit: number): Promise<ValidationItem[]> {
+    throw new UnsupportedFeatureError("Approvals");
+  }
+
+  async listValidations(_itilType: ItilType, _id: number): Promise<ValidationItem[]> {
+    throw new UnsupportedFeatureError("Approvals");
+  }
+
+  async requestValidation(_itilType: ItilType, _id: number, _validator: number, _comment?: string): Promise<unknown> {
+    throw new UnsupportedFeatureError("Approvals");
+  }
+
+  async answerValidation(_itilType: ItilType, _id: number, _d: ValidationDecision, _c?: string): Promise<unknown> {
+    throw new UnsupportedFeatureError("Approvals");
+  }
+
+  async assetContext(_itemtype: string, _id: number, _limit: number): Promise<unknown> {
+    throw new UnsupportedFeatureError("Asset ticket history");
+  }
+
+  async itilStats(_q: StatsQuery): Promise<unknown> {
+    throw new UnsupportedFeatureError("Service desk statistics");
   }
 }
 

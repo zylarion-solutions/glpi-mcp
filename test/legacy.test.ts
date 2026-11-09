@@ -50,7 +50,8 @@ describe("LegacyBackend", () => {
     expect(calls[1].headers["session-token"]).toBe("st1");
     const q = decodeURIComponent(calls[1].url.search);
     expect(q).toContain("criteria[0][criteria][0][value]=notold");
-    expect(q).toContain("criteria[1][searchtype]=contains");
+    expect(q).toContain("criteria[1][criteria][0][searchtype]=contains");
+    expect(q).toContain("criteria[1][criteria][1][field]=21"); // title OR description
     expect(q).toContain("range=0-9");
     expect(page.total).toBe(1);
     expect(page.items[0]).toMatchObject({

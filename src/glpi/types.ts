@@ -115,6 +115,112 @@ export interface ItemRef {
   [key: string]: unknown;
 }
 
+/** Thrown when the active API cannot do something; the tool layer may retry on the legacy API. */
+export class UnsupportedFeatureError extends Error {
+  constructor(feature: string, hint = "Run the server with legacy API credentials (GLPI_USER_TOKEN) for this feature.") {
+    super(`${feature} is not available on the GLPI High-Level API. ${hint}`);
+  }
+}
+
+export interface SessionInfo {
+  userId: number;
+  login?: string;
+  name?: string;
+  groupIds: number[];
+  profile?: string;
+  entity?: string;
+}
+
+export interface QueueQuery {
+  itilType: ItilType;
+  /** Include items assigned to the user's groups, not only to the user. */
+  includeGroups: boolean;
+  statuses?: number[];
+  start: number;
+  limit: number;
+}
+
+export type SlaKind = "resolve" | "own";
+
+export interface SlaQuery {
+  kinds: SlaKind[];
+  /** Look-ahead window for "due soon". */
+  withinHours: number;
+  /** Also use the internal targets (OLA) when set. */
+  includeOla: boolean;
+  assignedGroupId?: number;
+  assignedUserId?: number;
+  limit: number;
+}
+
+export interface SlaItem extends ItilSummary {
+  target: "time_to_resolve" | "time_to_own" | "internal_time_to_resolve" | "internal_time_to_own";
+  due: string;
+  state: "overdue" | "due_soon";
+}
+
+export interface SimilarQuery {
+  text: string;
+  includeKb: boolean;
+  includeOpen: boolean;
+  includeSolved: boolean;
+  limit: number;
+}
+
+export interface SimilarHit {
+  kind: "kb_article" | "open_ticket" | "solved_ticket";
+  id: number;
+  name: string;
+  score: number;
+  status?: string;
+  date?: string;
+  excerpt?: string;
+}
+
+export interface DocumentInfo {
+  id: number;
+  name?: string;
+  filename?: string;
+  mime?: string;
+  size?: number;
+  date?: string;
+}
+
+export interface DownloadedDocument {
+  id: number;
+  filename: string;
+  mime: string;
+  bytes: Buffer;
+}
+
+export type ValidationDecision = "approve" | "refuse";
+
+export interface ValidationItem {
+  validation_id: number;
+  itil_type: ItilType;
+  item_id: number;
+  item_name?: string;
+  status: string;
+  requested_by?: unknown;
+  validator?: unknown;
+  submission_date?: string;
+  comment_submission?: string;
+  comment_validation?: string;
+  validation_date?: string;
+}
+
+export interface StatsQuery {
+  itilType: ItilType;
+  /** Inclusive, "YYYY-MM-DD". */
+  from: string;
+  /** Inclusive, "YYYY-MM-DD". */
+  to: string;
+  assignedGroupId?: number;
+  categoryId?: number;
+  /** Safety cap on rows read. */
+  maxRows: number;
+}
+
 export interface GlpiBackend {
   readonly kind: "legacy" | "hlapi";
   /** API kind and version, for diagnostics. */
@@ -148,6 +254,21 @@ export interface GlpiBackend {
 
   /** Read-only escape hatch for endpoints the tools do not cover. */
   rawGet(path: string, query?: Record<string, unknown>): Promise<unknown>;
+
+  // --- Experience features (UnsupportedFeatureError when the API cannot do it)
+  session(): Promise<SessionInfo>;
+  myQueue(q: QueueQuery): Promise<Page<ItilSummary>>;
+  slaAtRisk(q: SlaQuery): Promise<{ overdue: SlaItem[]; due_soon: SlaItem[]; window_hours: number }>;
+  findSimilar(q: SimilarQuery): Promise<SimilarHit[]>;
+  listDocuments(itemtype: string, id: number): Promise<DocumentInfo[]>;
+  downloadDocument(id: number, maxBytes: number): Promise<DownloadedDocument>;
+  uploadDocument(itemtype: string, id: number, filename: string, mime: string, bytes: Buffer): Promise<unknown>;
+  listPendingValidations(itilType: ItilType, limit: number): Promise<ValidationItem[]>;
+  listValidations(itilType: ItilType, id: number): Promise<ValidationItem[]>;
+  requestValidation(itilType: ItilType, id: number, validatorUserId: number, comment?: string): Promise<unknown>;
+  answerValidation(itilType: ItilType, validationId: number, decision: ValidationDecision, comment?: string): Promise<unknown>;
+  assetContext(itemtype: string, id: number, ticketLimit: number): Promise<unknown>;
+  itilStats(q: StatsQuery): Promise<unknown>;
 
   close(): Promise<void>;
 }

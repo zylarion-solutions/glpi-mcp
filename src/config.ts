@@ -9,6 +9,7 @@
 
 export type ApiMode = "auto" | "legacy" | "hlapi";
 export type TransportMode = "stdio" | "http";
+export type HttpAuthMode = "token" | "oauth";
 
 export interface LegacyCredentials {
   appToken?: string;
@@ -37,14 +38,31 @@ export interface Config {
   timeoutMs: number;
   /** Max rows a list/search tool may return in one call. */
   maxLimit: number;
+  /** Max size of an attachment downloaded or uploaded through the tools. */
+  maxFileBytes: number;
   transport: TransportMode;
   http: {
     host: string;
     port: number;
-    /** Bearer token clients must send to /mcp. Required unless explicitly disabled. */
+    /** "token": static bearer token; "oauth": OAuth 2.1 with per-user GLPI login (claude.ai connectors). */
+    authMode: HttpAuthMode;
+    /** Bearer token clients must send to /mcp in token mode. */
     authToken?: string;
     allowNoAuth: boolean;
     allowedOrigins: string[];
+    /** Express "trust proxy" setting when running behind a reverse proxy (hop count or false). */
+    trustProxy: number | false;
+    /** Token mode: let each client send its own GLPI token in X-GLPI-User-Token to act as that user. */
+    allowUserTokens: boolean;
+    /** Public base URL of this server (https://mcp.example.com). Required for OAuth. */
+    publicUrl?: string;
+    oauth: {
+      /** Secret (32+ chars) used to encrypt stored GLPI tokens and sign login forms. */
+      secret?: string;
+      stateFile?: string;
+      accessTokenTtl: number;
+      refreshTokenTtl: number;
+    };
   };
 }
 
@@ -59,6 +77,15 @@ function int(value: string | undefined, fallback: number, name: string): number 
   if (value === undefined || value.trim() === "") return fallback;
   const n = Number.parseInt(value, 10);
   if (!Number.isFinite(n) || n <= 0) throw new ConfigError(`${name} must be a positive integer`);
+  return n;
+}
+
+function trustProxy(value: string | undefined): number | false {
+  const v = value?.trim().toLowerCase();
+  if (!v || v === "false" || v === "0") return false;
+  if (v === "true") return 1;
+  const n = Number.parseInt(v, 10);
+  if (!Number.isFinite(n) || n < 0) throw new ConfigError("MCP_TRUST_PROXY must be true, false or a hop count");
   return n;
 }
 
@@ -87,6 +114,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const transport = (opt(env.MCP_TRANSPORT) ?? "stdio").toLowerCase();
   if (!["stdio", "http"].includes(transport)) throw new ConfigError("MCP_TRANSPORT must be stdio or http");
 
+  const authMode = (opt(env.MCP_AUTH_MODE) ?? "token").toLowerCase();
+  if (!["token", "oauth"].includes(authMode)) throw new ConfigError("MCP_AUTH_MODE must be token or oauth");
+
+  const rawPublicUrl = opt(env.MCP_PUBLIC_URL);
+  let publicUrl: string | undefined;
+  if (rawPublicUrl) {
+    try {
+      publicUrl = new URL(rawPublicUrl).toString().replace(/\/+$/, "");
+    } catch {
+      throw new ConfigError(`MCP_PUBLIC_URL is not a valid URL: ${rawPublicUrl}`);
+    }
+  }
+
   const hlapiVersion = opt(env.GLPI_HLAPI_VERSION) ?? "auto";
   if (hlapiVersion !== "auto" && !/^\d+\.\d+$/.test(hlapiVersion)) {
     throw new ConfigError('GLPI_HLAPI_VERSION must be "auto" or "major.minor", e.g. 2.3');
@@ -113,16 +153,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     allowDelete: bool(env.GLPI_ALLOW_DELETE, false),
     timeoutMs: int(env.GLPI_TIMEOUT_MS, 30000, "GLPI_TIMEOUT_MS"),
     maxLimit: int(env.GLPI_MAX_LIMIT, 100, "GLPI_MAX_LIMIT"),
+    maxFileBytes: int(env.GLPI_MAX_FILE_MB, 10, "GLPI_MAX_FILE_MB") * 1024 * 1024,
     transport: transport as TransportMode,
     http: {
       host: opt(env.MCP_HTTP_HOST) ?? "127.0.0.1",
       port: int(env.MCP_HTTP_PORT ?? env.PORT, 8000, "MCP_HTTP_PORT"),
+      authMode: authMode as HttpAuthMode,
       authToken: opt(env.MCP_AUTH_TOKEN),
       allowNoAuth: bool(env.MCP_ALLOW_NO_AUTH, false),
       allowedOrigins: (opt(env.MCP_ALLOWED_ORIGINS) ?? "")
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean),
+      trustProxy: trustProxy(env.MCP_TRUST_PROXY),
+      allowUserTokens: bool(env.MCP_ALLOW_USER_TOKENS, false),
+      publicUrl,
+      oauth: {
+        secret: opt(env.MCP_OAUTH_SECRET),
+        stateFile: opt(env.MCP_OAUTH_STATE_FILE),
+        accessTokenTtl: int(env.MCP_OAUTH_ACCESS_TTL, 3600, "MCP_OAUTH_ACCESS_TTL"),
+        refreshTokenTtl: int(env.MCP_OAUTH_REFRESH_TTL, 30 * 24 * 3600, "MCP_OAUTH_REFRESH_TTL"),
+      },
     },
   };
 }
