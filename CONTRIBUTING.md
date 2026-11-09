@@ -28,6 +28,10 @@ Títulos de PR en [Conventional Commits](https://www.conventionalcommits.org/es/
 
 ## Qué valida cada PR
 
-1. Título en Conventional Commits.
+Este repo sigue el [Estándar QA de Zylarion](https://github.com/zylarion-solutions/estandar-qa) (nivel 2 · público). Como el repo es público, los workflows del estándar están copiados en `.github/workflows/estandar-*.yml` (no se editan aquí). `qa.yml` corre todo y termina en el check **Estándar QA**, el único que exige el ruleset de `main`:
+
+1. Política del PR: rama de origen, título en Conventional Commits y descripción.
 2. `npm run ci` en Node 22 y 24: tipos (`tsc`), pruebas (vitest) y build; además `docker build` de la imagen.
-3. Seguridad (`security.yml`): secretos (gitleaks), dependencias (`npm audit`) y análisis estático (Semgrep). También cada lunes.
+3. Seguridad: secretos (gitleaks), integridad y vulnerabilidades de dependencias (`npm audit`) y análisis estático (Semgrep). También cada lunes.
+4. CodeQL y revisión de dependencias del PR.
+5. Higiene de workflows: actionlint y zizmor.

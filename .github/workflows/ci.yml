@@ -1,17 +1,11 @@
 name: CI
 
+# Calidad propia del repo. La llama qa.yml (Estándar QA, en cada PR y en cada push a main).
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_call: {}
 
 permissions:
   contents: read
-
-concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
 
 jobs:
   test:
@@ -46,5 +40,5 @@ jobs:
       - name: La imagen arranca y responde /healthz
         run: |
           docker run -d --name mcp -p 8000:8000 -e GLPI_URL=https://glpi.invalid -e GLPI_APP_TOKEN=ci -e GLPI_USER_TOKEN=ci -e MCP_AUTH_TOKEN=solo-para-ci glpi-mcp:ci
-          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8000/healthz && exit 0; sleep 1; done
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:8000/healthz && exit 0; sleep 1; done
           docker logs mcp; exit 1

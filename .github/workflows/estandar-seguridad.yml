@@ -1,0 +1,131 @@
+# COPIA de zylarion-solutions/estandar-qa@v1:.github/workflows/seguridad.yml — no editar aquí.
+# glpi-mcp es público y GitHub no deja que un repo público llame workflows de uno privado,
+# así que el estándar se copia. Al mover v1 en estandar-qa, se actualiza esta copia por PR.
+name: Seguridad (reutilizable)
+
+# Estándar QA §4. Secretos, dependencias (vulnerabilidades e integridad) y
+# análisis estático. Lo llama el workflow "Estándar QA" de cada repo en cada PR,
+# en cada push a main/develop y cada lunes.
+
+on:
+  workflow_call:
+    inputs:
+      npm_dirs:
+        description: >-
+          Carpetas con package-lock.json, en JSON (p. ej. '[".", "workers/api"]').
+          '[]' si el repo no usa npm.
+        type: string
+        default: '["."]'
+      node_version:
+        description: Versión de Node para npm audit. Vacío = usar .nvmrc de cada carpeta (o del repo).
+        type: string
+        default: ""
+      semgrep_configs:
+        description: Reglas de Semgrep separadas por espacio.
+        type: string
+        default: p/owasp-top-ten p/secrets p/typescript
+      semgrep_excluir:
+        description: Rutas que Semgrep no analiza, separadas por espacio.
+        type: string
+        default: node_modules dist build coverage .next .open-next .astro .wrangler
+      gitleaks_config:
+        description: Ruta a la configuración de gitleaks del repo (vacío = la de fábrica).
+        type: string
+        default: ""
+    secrets:
+      GITLEAKS_LICENSE:
+        description: Licencia de gitleaks (secreto de la org zylarion-solutions).
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  NPM_VERSION: 11.21.2
+
+jobs:
+  secretos:
+    name: Secretos en el código (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # gitleaks lee los commits del PR (necesario en repos privados)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_CONFIG: ${{ inputs.gitleaks_config }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+          GITLEAKS_ENABLE_SUMMARY: true
+
+  dependencias:
+    name: Dependencias (${{ matrix.dir }})
+    if: inputs.npm_dirs != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(inputs.npm_dirs) }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Versión de Node
+        id: node
+        env:
+          FIJA: ${{ inputs.node_version }}
+        run: |
+          if [ -n "$FIJA" ]; then v="$FIJA"
+          elif [ -f .nvmrc ]; then v="$(cat .nvmrc)"
+          elif [ -f "$GITHUB_WORKSPACE/.nvmrc" ]; then v="$(cat "$GITHUB_WORKSPACE/.nvmrc")"
+          else v=22; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+
+      - name: npm ${{ env.NPM_VERSION }} (firmas actuales del registro)
+        run: npm install -g "npm@${NPM_VERSION}" --no-audit --no-fund
+
+      - name: Instalar sin ejecutar scripts (lockfile exacto)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Integridad (firmas y procedencia del registro)
+        run: npm audit signatures
+
+      - name: Vulnerabilidades en producción (bloquea en moderate o más)
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Vulnerabilidades en desarrollo (bloquea en high o más)
+        run: npm audit --audit-level=high
+
+  sast:
+    name: Análisis estático (Semgrep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Semgrep
+        env:
+          CONFIGS: ${{ inputs.semgrep_configs }}
+          EXCLUIR: ${{ inputs.semgrep_excluir }}
+        run: |
+          set -euo pipefail
+          args=()
+          for c in $CONFIGS; do args+=(--config "$c"); done
+          for e in $EXCLUIR; do args+=(--exclude "$e"); done
+          pipx run --spec semgrep==1.184.0 semgrep scan "${args[@]}" --error --metrics=off

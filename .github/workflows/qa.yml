@@ -1,0 +1,78 @@
+name: Estándar QA
+
+# Estándar de calidad de la org: zylarion-solutions/estandar-qa (ESTANDAR-QA.md).
+# Este repo es público: usa copias locales de los workflows del estándar (estandar-*.yml).
+# El ruleset de main exige un solo check: "Estándar QA".
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "29 11 * * 1" # lunes 06:29 Bogotá: dependencias nuevas con vulnerabilidades
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qa-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  politica:
+    name: Política del PR
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/estandar-politica-pr.yml
+    with:
+      flujo: trunk
+
+  seguridad:
+    name: Seguridad
+    uses: ./.github/workflows/estandar-seguridad.yml
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      npm_dirs: '["."]'
+      semgrep_configs: p/owasp-top-ten p/secrets p/typescript p/nodejs
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  higiene:
+    name: Higiene de workflows
+    uses: ./.github/workflows/estandar-higiene-workflows.yml
+
+  # Repo público: CodeQL y revisión de dependencias del PR.
+  codeql:
+    name: CodeQL
+    uses: ./.github/workflows/estandar-codeql.yml
+    permissions:
+      contents: read
+      security-events: write
+
+  # Tipos, pruebas y build en Node 22 y 24, y la imagen Docker arranca.
+  calidad:
+    name: Calidad
+    uses: ./.github/workflows/ci.yml
+
+  # Único check obligatorio: resume todos los anteriores. Si agregas un job, súmalo a `needs`.
+  estandar:
+    name: Estándar QA
+    if: always()
+    needs: [politica, seguridad, higiene, codeql, calidad]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Resultado
+        env:
+          RESULTADOS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$RESULTADOS"
+          malos="$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<<"$RESULTADOS")"
+          if [ -n "$malos" ]; then
+            echo "::error::Falló el Estándar QA en: $malos"
+            exit 1
+          fi

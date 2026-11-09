@@ -1,0 +1,46 @@
+# COPIA de zylarion-solutions/estandar-qa@v1:.github/workflows/codeql.yml — no editar aquí.
+# glpi-mcp es público y GitHub no deja que un repo público llame workflows de uno privado,
+# así que el estándar se copia. Al mover v1 en estandar-qa, se actualiza esta copia por PR.
+name: CodeQL (reutilizable)
+
+# Estándar QA §4. CodeQL y revisión de dependencias del PR. Solo para repos
+# públicos o con GitHub Advanced Security (en privados sin GHAS no funcionan).
+# Va aparte de seguridad.yml porque necesita security-events: write.
+
+on:
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Revisión de dependencias del PR
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          deny-licenses: GPL-3.0, AGPL-3.0
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3

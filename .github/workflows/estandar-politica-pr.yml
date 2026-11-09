@@ -1,0 +1,101 @@
+# COPIA de zylarion-solutions/estandar-qa@v1:.github/workflows/politica-pr.yml — no editar aquí.
+# glpi-mcp es público y GitHub no deja que un repo público llame workflows de uno privado,
+# así que el estándar se copia. Al mover v1 en estandar-qa, se actualiza esta copia por PR.
+name: Política del PR (reutilizable)
+
+# Estándar QA §3. Rama de origen, título en Conventional Commits, descripción
+# y tamaño del PR. Lo llama el workflow "Estándar QA" de cada repo.
+
+on:
+  workflow_call:
+    inputs:
+      flujo:
+        description: >-
+          "gitflow": ramas de trabajo → develop → main (hotfix/* puede ir directo a main).
+          "trunk": ramas de trabajo → main.
+        type: string
+        default: trunk
+      prefijos_rama:
+        description: Prefijos permitidos para ramas de trabajo (expresión regular, sin la barra).
+        type: string
+        default: feature|feat|fix|chore|docs|refactor|test|ci|perf|security|hotfix|build|revert|release|dependabot|claude|wt
+      lineas_aviso:
+        description: A partir de cuántas líneas cambiadas se avisa que el PR es grande (no bloquea).
+        type: number
+        default: 800
+
+permissions:
+  contents: read
+
+jobs:
+  politica:
+    name: Rama, título y descripción
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Validar el PR
+        env:
+          FLUJO: ${{ inputs.flujo }}
+          PREFIJOS: ${{ inputs.prefijos_rama }}
+          LINEAS_AVISO: ${{ inputs.lineas_aviso }}
+          HEAD: ${{ github.head_ref }}
+          BASE: ${{ github.base_ref }}
+          TITULO: ${{ github.event.pull_request.title }}
+          CUERPO: ${{ github.event.pull_request.body }}
+          AUTOR: ${{ github.event.pull_request.user.login }}
+          MISMO_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          ADICIONES: ${{ github.event.pull_request.additions }}
+          BORRADOS: ${{ github.event.pull_request.deletions }}
+          RAMA_DEFAULT: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          errores=0
+          falla() { echo "::error::$1"; errores=$((errores + 1)); }
+
+          # 1. Solo ramas de este repositorio (nada de forks).
+          [ "$MISMO_REPO" = "true" ] || falla "Solo se aceptan PR desde ramas de este repositorio."
+
+          # 2. Rama de origen permitida para el destino.
+          trabajo="^(${PREFIJOS})/"
+          rama_default="$RAMA_DEFAULT"
+          case "$FLUJO" in
+            gitflow)
+              case "$BASE" in
+                main|master)
+                  [[ "$HEAD" == "develop" || "$HEAD" =~ ^hotfix/ ]] \
+                    || falla "A $BASE solo llegan PR desde develop o hotfix/*. Llegó: $HEAD" ;;
+                develop)
+                  [[ "$HEAD" =~ $trabajo || "$HEAD" == "main" || "$HEAD" == "master" ]] \
+                    || falla "Nombre de rama no permitido: $HEAD (usa tipo/descripcion, p. ej. feature/contacto)" ;;
+                *)
+                  falla "En flujo gitflow los PR van a develop o a $rama_default. Llegó a: $BASE" ;;
+              esac ;;
+            trunk)
+              [[ "$HEAD" =~ $trabajo ]] \
+                || falla "Nombre de rama no permitido: $HEAD (usa tipo/descripcion, p. ej. fix/login)" ;;
+            *)
+              falla "Valor de 'flujo' desconocido: $FLUJO (usa gitflow o trunk)" ;;
+          esac
+
+          # 3. Título en Conventional Commits (queda como mensaje del squash).
+          re='^(feat|fix|security|chore|docs|refactor|test|ci|perf|build|revert|release|content)(\([a-z0-9._/áéíóúñ-]+\))?!?: .{3,}$'
+          [[ "$TITULO" =~ $re ]] \
+            || falla "El título debe ser 'tipo(alcance): descripción' en Conventional Commits, p. ej. 'fix(contacto): validar correo'. Llegó: $TITULO"
+
+          # 4. Descripción: qué cambia y por qué (Dependabot queda exento).
+          if [[ "$AUTOR" != "dependabot[bot]" ]]; then
+            # Sin comentarios, títulos ni casillas de la plantilla: solo lo que escribió el autor.
+            limpio="$(printf '%s' "$CUERPO" | sed -e 's/<!--.*-->//g' | grep -v -E '^[[:space:]]*(#|[-*] \[[ xX]\])' | tr -d '[:space:]' || true)"
+            [ "${#limpio}" -ge 30 ] \
+              || falla "El PR necesita descripción: qué cambia, por qué y cómo se probó (plantilla del PR)."
+          fi
+
+          # 5. Tamaño: aviso, no bloquea.
+          total=$((ADICIONES + BORRADOS))
+          if [ "$total" -gt "$LINEAS_AVISO" ]; then
+            echo "::warning::PR grande ($total líneas). Si se puede, divídelo: los PR pequeños se revisan mejor."
+          fi
+
+          [ "$errores" -eq 0 ] || exit 1
+          echo "OK: $HEAD → $BASE · $TITULO"
