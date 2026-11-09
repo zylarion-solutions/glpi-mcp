@@ -461,12 +461,26 @@ function setIf(target: Record<string, unknown>, key: string, value: unknown) {
   if (value !== undefined && value !== null) target[key] = value;
 }
 
+/**
+ * Remove HTML tags so a search cell reads as plain text.
+ * A single pass can rebuild a tag from its pieces ("<scr<b>ipt>" -> "<script>"),
+ * so strip until nothing changes and then drop any stray angle brackets.
+ */
+export function stripTags(input: string): string {
+  let text = input;
+  let previous: string;
+  do {
+    previous = text;
+    text = text.replace(/<[^<>]*>/g, "");
+  } while (text !== previous);
+  return text.replace(/[<>]/g, "");
+}
+
 /** Search results may hold HTML (links) or arrays for multi-valued fields. */
 export function cleanCell(value: unknown): string | undefined {
   if (value === null || value === undefined || value === "") return undefined;
   if (Array.isArray(value)) return value.map((v) => cleanCell(v)).filter(Boolean).join(", ") || undefined;
-  return String(value)
-    .replace(/<[^>]*>/g, "")
+  return stripTags(String(value))
     .replace(/&nbsp;/g, " ")
     .replace(/\$\$\$\$/g, ", ")
     .trim() || undefined;
