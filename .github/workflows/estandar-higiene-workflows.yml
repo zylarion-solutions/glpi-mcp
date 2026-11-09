@@ -1,0 +1,52 @@
+# COPIA de zylarion-solutions/estandar-qa@v1:.github/workflows/higiene-workflows.yml — no editar aquí.
+# glpi-mcp es público y GitHub no deja que un repo público llame workflows de uno privado,
+# así que el estándar se copia. Al mover v1 en estandar-qa, se actualiza esta copia por PR.
+name: Higiene de workflows (reutilizable)
+
+# Estándar QA §4. Los workflows son código con acceso a secretos y despliegues:
+# se revisan como tal. actionlint (errores de sintaxis y de shell) y zizmor
+# (inyección de plantillas, permisos excesivos, credenciales persistidas,
+# acciones sin fijar por SHA). Bloquea en severidad media o más.
+
+on:
+  workflow_call:
+    inputs:
+      severidad_minima:
+        description: Severidad mínima de zizmor que bloquea (low, medium, high).
+        type: string
+        default: medium
+
+permissions:
+  contents: read
+
+jobs:
+  higiene:
+    name: actionlint y zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        run: pipx run --spec actionlint-py==1.7.12.25 actionlint -color
+
+      - name: zizmor
+        env:
+          SEVERIDAD: ${{ inputs.severidad_minima }}
+        run: |
+          set -euo pipefail
+          # Política de la org: todo `uses:` fijado por SHA, salvo los workflows
+          # del propio estándar (zylarion-solutions/*), que van por etiqueta (v1).
+          conf="$RUNNER_TEMP/zizmor.yml"
+          cat > "$conf" <<'YAML'
+          rules:
+            unpinned-uses:
+              config:
+                policies:
+                  "zylarion-solutions/*": ref-pin
+                  "*": hash-pin
+          YAML
+          pipx run --spec zizmor==1.32.0 zizmor --offline --no-progress \
+            --config "$conf" --min-severity "$SEVERIDAD" --format github .github/workflows
