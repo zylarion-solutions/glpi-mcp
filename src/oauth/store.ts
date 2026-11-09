@@ -9,7 +9,7 @@
  *   a restart.
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from "node:crypto";
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 export interface Grant {
@@ -44,7 +44,11 @@ interface Snapshot {
   grants: Record<string, Grant>;
   access: Record<string, TokenRecord>;
   refresh: Record<string, TokenRecord>;
+  rotated?: Record<string, TokenRecord>;
 }
+
+/** Registered clients that never completed a sign-in are forgotten after this long. */
+const UNUSED_CLIENT_TTL_MS = 7 * 24 * 3600 * 1000;
 
 export const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 export const randomToken = (bytes = 32) => randomBytes(bytes).toString("base64url");
@@ -55,6 +59,8 @@ export class OAuthStore {
   readonly grants = new Map<string, Grant>();
   readonly access = new Map<string, TokenRecord>();
   readonly refresh = new Map<string, TokenRecord>();
+  /** Refresh tokens already rotated, kept until they would have expired, to detect reuse. */
+  readonly rotated = new Map<string, TokenRecord>();
   private readonly key?: Buffer;
   private saveTimer?: NodeJS.Timeout;
 
@@ -94,6 +100,7 @@ export class OAuthStore {
     for (const [k, v] of Object.entries(snap.grants ?? {})) this.grants.set(k, v);
     for (const [k, v] of Object.entries(snap.access ?? {})) this.access.set(k, v);
     for (const [k, v] of Object.entries(snap.refresh ?? {})) this.refresh.set(k, v);
+    for (const [k, v] of Object.entries(snap.rotated ?? {})) this.rotated.set(k, v);
     this.sweep();
   }
 
@@ -101,7 +108,14 @@ export class OAuthStore {
   changed() {
     if (!this.file) return;
     clearTimeout(this.saveTimer);
-    this.saveTimer = setTimeout(() => this.saveNow(), 200);
+    this.saveTimer = setTimeout(() => {
+      try {
+        this.saveNow();
+      } catch (err) {
+        // Never crash the server over persistence; sign-ins still work from memory.
+        console.error("[glpi-mcp] could not save MCP_OAUTH_STATE_FILE:", (err as Error).message);
+      }
+    }, 200);
     this.saveTimer.unref();
   }
 
@@ -114,22 +128,31 @@ export class OAuthStore {
       grants: Object.fromEntries(this.grants),
       access: Object.fromEntries(this.access),
       refresh: Object.fromEntries(this.refresh),
+      rotated: Object.fromEntries(this.rotated),
     };
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.key, iv);
     const data = Buffer.concat([cipher.update(JSON.stringify(snap), "utf8"), cipher.final()]);
     const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, Buffer.concat([iv, cipher.getAuthTag(), data]), { mode: 0o600 });
+    // Recreate the temp file so it always gets 0600, and flush it before the atomic rename.
+    rmSync(tmp, { force: true });
+    const fd = openSync(tmp, "wx", 0o600);
+    try {
+      writeSync(fd, Buffer.concat([iv, cipher.getAuthTag(), data]));
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(tmp, this.file);
   }
 
   // ---------------------------------------------------------------- cleanup
 
-  /** Drop expired codes and tokens, and grants no refresh token points to any more. */
+  /** Drop expired codes and tokens, grants nothing points to any more, and clients never used. */
   sweep(now = Date.now()) {
     let dirty = false;
     for (const [k, v] of this.codes) if (v.expiresAt <= now) this.codes.delete(k);
-    for (const map of [this.access, this.refresh]) {
+    for (const map of [this.access, this.refresh, this.rotated]) {
       for (const [k, v] of map) {
         if (v.expiresAt <= now) {
           map.delete(k);
@@ -137,13 +160,24 @@ export class OAuthStore {
         }
       }
     }
-    const live = new Set([...this.refresh.values()].map((r) => r.grantId));
-    for (const [k, g] of this.grants) {
-      if (!live.has(k) && ![...this.access.values()].some((a) => a.grantId === k)) {
+    const live = new Set<string>();
+    for (const r of this.refresh.values()) live.add(r.grantId);
+    for (const a of this.access.values()) live.add(a.grantId);
+    for (const k of this.grants.keys()) {
+      if (!live.has(k)) {
         this.grants.delete(k);
         dirty = true;
       }
-      void g;
+    }
+    const used = new Set<string>();
+    for (const g of this.grants.values()) used.add(g.clientId);
+    for (const c of this.codes.values()) used.add(c.clientId);
+    for (const [id, c] of this.clients) {
+      const issued = (c.client_id_issued_at ?? 0) * 1000;
+      if (!used.has(id) && issued + UNUSED_CLIENT_TTL_MS <= now) {
+        this.clients.delete(id);
+        dirty = true;
+      }
     }
     if (dirty) this.changed();
   }
@@ -151,7 +185,7 @@ export class OAuthStore {
   /** Remove a grant and every token issued from it. */
   revokeGrant(grantId: string) {
     this.grants.delete(grantId);
-    for (const map of [this.access, this.refresh]) {
+    for (const map of [this.access, this.refresh, this.rotated]) {
       for (const [k, v] of map) if (v.grantId === grantId) map.delete(k);
     }
     this.changed();

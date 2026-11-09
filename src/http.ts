@@ -112,11 +112,16 @@ export function createHttpApp(config: Config, deps: HttpDeps = {}): HttpApp {
     sweeper = setInterval(() => oauthStore.sweep(), 60_000);
     sweeper.unref();
 
+    const issuer = new URL(http.publicUrl);
+    const resourceUrl = new URL("/mcp", issuer);
     const provider = new GlpiOAuthProvider(oauthStore, {
+      resourceUrl: resourceUrl.toString(),
       secret,
       glpiUrl: config.glpiUrl,
       accessTokenTtl: http.oauth.accessTokenTtl,
       refreshTokenTtl: http.oauth.refreshTokenTtl,
+      maxGrantAge: http.oauth.maxGrantAge,
+      redirectHosts: http.oauth.redirectHosts,
       validateToken: async (token) => {
         const probe = new LegacyBackend(config, fetchImpl, { userToken: token });
         try {
@@ -129,8 +134,6 @@ export function createHttpApp(config: Config, deps: HttpDeps = {}): HttpApp {
       },
     });
 
-    const issuer = new URL(http.publicUrl);
-    const resourceUrl = new URL("/mcp", issuer);
     app.use(
       mcpAuthRouter({
         provider,
@@ -154,20 +157,22 @@ export function createHttpApp(config: Config, deps: HttpDeps = {}): HttpApp {
         const target = await provider.completeLogin(sealed, String(req.body?.glpi_user_token ?? ""));
         res.redirect(302, target);
       } catch (err) {
-        let clientName: string | undefined;
+        let pending: { clientId: string; redirectUri: string };
         try {
-          clientName = oauthStore.clients.get(provider.openRequest(sealed).clientId)?.client_name;
+          pending = provider.openRequest(sealed);
         } catch {
           res.status(400).type("text/plain").send("Invalid or expired sign-in request. Start the connection again from your app.");
           return;
         }
-        provider.sendLoginPage(res, sealed, clientName, (err as Error).message, 400);
+        const clientName = oauthStore.clients.get(pending.clientId)?.client_name;
+        provider.sendLoginPage(res, sealed, pending.redirectUri, clientName, (err as Error).message, 400);
       }
     });
 
     const bearer = requireBearerAuth({
       verifier: provider,
       requiredScopes: [OAUTH_SCOPE],
+      expectedResource: resourceUrl,
       resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceUrl),
     });
     app.post("/mcp", originGuard, bearer, express.json({ limit: "16mb" }), (req, res) => {

@@ -62,6 +62,10 @@ export interface Config {
       stateFile?: string;
       accessTokenTtl: number;
       refreshTokenTtl: number;
+      /** Max lifetime of a sign-in, however often it is refreshed (seconds). */
+      maxGrantAge: number;
+      /** Hosts allowed in client redirect URIs ("*" = any). Loopback is always allowed. */
+      redirectHosts: string[];
     };
   };
 }
@@ -173,6 +177,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         stateFile: opt(env.MCP_OAUTH_STATE_FILE),
         accessTokenTtl: int(env.MCP_OAUTH_ACCESS_TTL, 3600, "MCP_OAUTH_ACCESS_TTL"),
         refreshTokenTtl: int(env.MCP_OAUTH_REFRESH_TTL, 30 * 24 * 3600, "MCP_OAUTH_REFRESH_TTL"),
+        maxGrantAge: int(env.MCP_OAUTH_MAX_GRANT_DAYS, 90, "MCP_OAUTH_MAX_GRANT_DAYS") * 24 * 3600,
+        redirectHosts: (opt(env.MCP_OAUTH_REDIRECT_HOSTS) ?? "claude.ai,claude.com")
+          .split(",")
+          .map((h) => h.trim().toLowerCase())
+          .filter(Boolean),
       },
     },
   };

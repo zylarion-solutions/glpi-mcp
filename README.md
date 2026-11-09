@@ -190,8 +190,13 @@ acts in GLPI with that person's rights. No service account is needed in this mod
 
 How it is protected:
 - OAuth 2.1 with dynamic client registration, PKCE (S256) and single-attempt authorization codes.
-- Access tokens expire (default 1 hour); refresh tokens rotate on every use (default 30 days); revoking
-  either signs the connection out.
+- Only allowed apps receive codes: redirect URIs must be on `MCP_OAUTH_REDIRECT_HOSTS` (default `claude.ai`,
+  `claude.com`) or loopback for local apps. The sign-in page shows which host will get access.
+- Access tokens expire (default 1 hour); refresh tokens rotate on every use (default 30 days) and a reused
+  refresh token signs the whole connection out; a sign-in ends after `MCP_OAUTH_MAX_GRANT_DAYS` (default 90)
+  however often it is refreshed; revoking either token signs the connection out.
+- At most 10 active connections per GLPI user; registered apps that never sign anyone in are forgotten
+  after 7 days.
 - Tokens are stored as SHA-256 hashes. The optional state file is encrypted with AES-256-GCM using a key
   derived from `MCP_OAUTH_SECRET`; GLPI tokens are never written to disk in clear text.
 - The sign-in form is sealed (encrypted and authenticated), rate limited (10 failed attempts per 15 minutes
@@ -225,6 +230,8 @@ How it is protected:
 | `MCP_OAUTH_SECRET` | — | 32+ random characters (required for OAuth) |
 | `MCP_OAUTH_STATE_FILE` | — | Encrypted file to keep sign-ins across restarts |
 | `MCP_OAUTH_ACCESS_TTL` / `MCP_OAUTH_REFRESH_TTL` | `3600` / `2592000` | Token lifetimes, seconds |
+| `MCP_OAUTH_MAX_GRANT_DAYS` | `90` | A sign-in ends after this many days, even if refreshed |
+| `MCP_OAUTH_REDIRECT_HOSTS` | `claude.ai,claude.com` | Hosts (and their subdomains) allowed to receive codes; `*` = any. Loopback is always allowed |
 | `MCP_ALLOWED_ORIGINS` | — | Allowed browser `Origin` values, comma-separated |
 | `MCP_TRUST_PROXY` | `false` | `true` or a hop count when behind a reverse proxy |
 

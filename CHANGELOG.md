@@ -19,7 +19,10 @@ All notable changes to this project are documented here. The format follows
 - MCP prompts: `triage`, `daily_summary`, `shift_handover`, `new_incident`, `review_approvals`.
 - **Per-user identity** over HTTP: `MCP_ALLOW_USER_TOKENS` (token mode) and `MCP_AUTH_MODE=oauth`, an OAuth 2.1
   authorization server (dynamic client registration, PKCE, rotating refresh tokens, encrypted state) so the server
-  works as a claude.ai custom connector and each person acts with their own GLPI rights.
+  works as a claude.ai custom connector and each person acts with their own GLPI rights. Hardened with an
+  allow-list of redirect hosts (`MCP_OAUTH_REDIRECT_HOSTS`), RFC 8252 loopback redirects, refresh token reuse
+  detection, a maximum sign-in age (`MCP_OAUTH_MAX_GRANT_DAYS`), per-user connection limits and expiry of
+  unused clients.
 - Automatic fallback to the legacy API for features the High-Level API does not cover yet.
 
 ### Changed

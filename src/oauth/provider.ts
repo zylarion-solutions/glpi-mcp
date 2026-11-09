@@ -13,7 +13,13 @@ import type { Response } from "express";
 import type { AuthorizationParams, OAuthServerProvider } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { InvalidGrantError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import {
+  InvalidClientMetadataError,
+  InvalidGrantError,
+  InvalidRequestError,
+  InvalidTokenError,
+} from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { redirectUriMatches } from "@modelcontextprotocol/sdk/server/auth/handlers/authorize.js";
 import type {
   OAuthClientInformationFull,
   OAuthTokenRevocationRequest,
@@ -25,6 +31,9 @@ import { renderLoginPage } from "./page.js";
 export const OAUTH_SCOPE = "glpi";
 const CODE_TTL_MS = 5 * 60 * 1000;
 const LOGIN_FORM_TTL_MS = 15 * 60 * 1000;
+/** Active connections one GLPI user may have; the oldest is signed out beyond this. */
+export const MAX_GRANTS_PER_USER = 10;
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 
 export interface GlpiIdentity {
   userId: number;
@@ -50,8 +59,16 @@ export interface ProviderOptions {
   glpiUrl: string;
   accessTokenTtl: number;
   refreshTokenTtl: number;
+  /** A sign-in stays usable at most this long, however often it is refreshed (seconds). */
+  maxGrantAge: number;
+  /** Hosts allowed in redirect URIs ("*" allows any); loopback is always allowed for local apps. */
+  redirectHosts: string[];
+  /** This server's MCP endpoint: the only resource tokens are issued for. */
+  resourceUrl: string;
   validateToken: TokenValidator;
 }
+
+const comparable = (u: string) => u.split("#")[0].replace(/\/$/, "");
 
 export class GlpiOAuthProvider implements OAuthServerProvider {
   /** Key that seals the login form: the browser can neither read nor change the request it carries. */
@@ -70,11 +87,31 @@ export class GlpiOAuthProvider implements OAuthServerProvider {
       registerClient: (client) => {
         const full = client as OAuthClientInformationFull;
         if (!full.client_id) throw new Error("client_id generation is required");
+        const refused = full.redirect_uris.filter((u) => !this.redirectAllowed(u));
+        if (refused.length) {
+          throw new InvalidClientMetadataError(
+            `redirect_uri host not allowed on this server: ${refused.join(", ")} (see MCP_OAUTH_REDIRECT_HOSTS)`,
+          );
+        }
         this.store.clients.set(full.client_id, full);
         this.store.changed();
         return full;
       },
     };
+  }
+
+  /** Only known apps (claude.ai by default) and local apps may receive authorization codes. */
+  redirectAllowed(uri: string): boolean {
+    let url: URL;
+    try {
+      url = new URL(uri);
+    } catch {
+      return false;
+    }
+    if (LOOPBACK.has(url.hostname)) return url.protocol === "http:" || url.protocol === "https:";
+    if (url.protocol !== "https:") return false;
+    const host = url.hostname.toLowerCase();
+    return this.opts.redirectHosts.some((h) => h === "*" || host === h || host.endsWith(`.${h}`));
   }
 
   // ------------------------------------------------------------ login form
@@ -103,6 +140,11 @@ export class GlpiOAuthProvider implements OAuthServerProvider {
   }
 
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
+    // Clients registered before the allow-list changed are re-checked here.
+    if (!this.redirectAllowed(params.redirectUri)) throw new InvalidRequestError("redirect_uri host not allowed on this server");
+    if (params.resource && comparable(params.resource.toString()) !== comparable(this.opts.resourceUrl)) {
+      throw new InvalidRequestError("Tokens can only be issued for this server's MCP endpoint");
+    }
     const pending: PendingAuthorization = {
       clientId: client.client_id,
       redirectUri: params.redirectUri,
@@ -112,20 +154,22 @@ export class GlpiOAuthProvider implements OAuthServerProvider {
       resource: params.resource?.toString(),
       exp: Date.now() + LOGIN_FORM_TTL_MS,
     };
-    this.sendLoginPage(res, this.sealRequest(pending), client.client_name);
+    this.sendLoginPage(res, this.sealRequest(pending), pending.redirectUri, client.client_name);
   }
 
-  sendLoginPage(res: Response, sealed: string, clientName?: string, error?: string, status = 200) {
+  sendLoginPage(res: Response, sealed: string, redirectUri: string, clientName?: string, error?: string, status = 200) {
+    const target = new URL(redirectUri);
+    // The form posts here and is then redirected to the app: CSP form-action must allow both.
     res
       .status(status)
       .set({
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
-        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${target.origin}; frame-ancestors 'none'; base-uri 'none'`,
         "X-Frame-Options": "DENY",
         "Referrer-Policy": "no-referrer",
       })
-      .send(renderLoginPage({ sealed, clientName, glpiUrl: this.opts.glpiUrl, error }));
+      .send(renderLoginPage({ sealed, clientName, redirectHost: target.host, glpiUrl: this.opts.glpiUrl, error }));
   }
 
   /**
@@ -135,7 +179,9 @@ export class GlpiOAuthProvider implements OAuthServerProvider {
   async completeLogin(sealed: string, glpiUserToken: string): Promise<string> {
     const p = this.openRequest(sealed);
     const client = this.store.clients.get(p.clientId);
-    if (!client || !client.redirect_uris.includes(p.redirectUri)) throw new Error("Unknown application. Start again from your app.");
+    if (!client || !client.redirect_uris.some((r) => redirectUriMatches(p.redirectUri, r)) || !this.redirectAllowed(p.redirectUri)) {
+      throw new Error("Unknown application. Start again from your app.");
+    }
     const token = glpiUserToken.trim();
     if (!/^[A-Za-z0-9]{20,128}$/.test(token)) throw new Error("That does not look like a GLPI API token (letters and digits only).");
 
@@ -203,7 +249,18 @@ export class GlpiOAuthProvider implements OAuthServerProvider {
     }
     const grantId = randomToken(16);
     this.store.grants.set(grantId, { ...code.grant, createdAt: Date.now() } satisfies Grant);
+    this.enforceGrantLimit(code.grant.userId);
     return this.issueTokens(grantId, client.client_id, code.grant.scopes);
+  }
+
+  /** Keep at most MAX_GRANTS_PER_USER connections per GLPI user; sign out the oldest. */
+  private enforceGrantLimit(userId: number) {
+    const mine = [...this.store.grants.entries()].filter(([, g]) => g.userId === userId).sort((a, b) => a[1].createdAt - b[1].createdAt);
+    for (const [id] of mine.slice(0, Math.max(0, mine.length - MAX_GRANTS_PER_USER))) this.store.revokeGrant(id);
+  }
+
+  private grantExpired(grant: Grant): boolean {
+    return grant.createdAt + this.opts.maxGrantAge * 1000 < Date.now();
   }
 
   private issueTokens(grantId: string, clientId: string, scopes: string[]): OAuthTokens {
@@ -225,13 +282,24 @@ export class GlpiOAuthProvider implements OAuthServerProvider {
   async exchangeRefreshToken(client: OAuthClientInformationFull, refreshToken: string): Promise<OAuthTokens> {
     const key = hashToken(refreshToken);
     const record = this.store.refresh.get(key);
-    if (!record || record.clientId !== client.client_id || record.expiresAt < Date.now()) {
+    if (!record) {
+      // A refresh token that was already rotated came back: it may have been stolen.
+      // Sign the whole connection out (OAuth 2.1 refresh token reuse detection).
+      const reused = this.store.rotated.get(key);
+      if (reused) this.store.revokeGrant(reused.grantId);
+      throw new InvalidGrantError("Invalid or expired refresh token");
+    }
+    if (record.clientId !== client.client_id || record.expiresAt < Date.now()) {
       throw new InvalidGrantError("Invalid or expired refresh token");
     }
     const grant = this.store.grants.get(record.grantId);
-    if (!grant) throw new InvalidGrantError("Invalid or expired refresh token");
-    // Rotate: the old refresh token stops working.
+    if (!grant || this.grantExpired(grant)) {
+      this.store.revokeGrant(record.grantId);
+      throw new InvalidGrantError("This sign-in expired. Connect again.");
+    }
+    // Rotate: the old refresh token stops working and is remembered to detect reuse.
     this.store.refresh.delete(key);
+    this.store.rotated.set(key, { grantId: record.grantId, clientId: record.clientId, expiresAt: record.expiresAt });
     return this.issueTokens(record.grantId, client.client_id, grant.scopes);
   }
 
@@ -241,13 +309,14 @@ export class GlpiOAuthProvider implements OAuthServerProvider {
     const record = this.store.access.get(hashToken(token));
     if (!record || record.expiresAt < Date.now()) throw new InvalidTokenError("Invalid or expired access token");
     const grant = this.store.grants.get(record.grantId);
-    if (!grant) throw new InvalidTokenError("Invalid or expired access token");
+    if (!grant || this.grantExpired(grant)) throw new InvalidTokenError("Invalid or expired access token");
     return {
       token,
       clientId: record.clientId,
       scopes: grant.scopes,
       expiresAt: Math.floor(record.expiresAt / 1000),
-      resource: grant.resource ? new URL(grant.resource) : undefined,
+      // Every token is bound to this server's MCP endpoint (checked at /authorize).
+      resource: new URL(this.opts.resourceUrl),
       extra: { glpiUserToken: grant.glpiUserToken, glpiUserId: grant.userId, glpiLogin: grant.login },
     };
   }

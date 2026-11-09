@@ -9,8 +9,15 @@ export function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-export function renderLoginPage(opts: { sealed: string; clientName?: string; glpiUrl: string; error?: string }): string {
+export function renderLoginPage(opts: {
+  sealed: string;
+  clientName?: string;
+  redirectHost: string;
+  glpiUrl: string;
+  error?: string;
+}): string {
   const app = escapeHtml(opts.clientName?.slice(0, 80) || "An application");
+  const host = escapeHtml(opts.redirectHost);
   const prefs = escapeHtml(`${opts.glpiUrl}/front/preference.php`);
   const glpi = escapeHtml(opts.glpiUrl);
   return `<!doctype html>
@@ -33,6 +40,7 @@ export function renderLoginPage(opts: { sealed: string; clientName?: string; glp
   input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font:inherit; background:transparent; color:inherit; }
   button { width:100%; margin-top:16px; padding:11px; border:0; border-radius:8px; background:var(--accent); color:#fff; font:inherit; font-weight:600; cursor:pointer; }
   .err { color:var(--err); margin-bottom:12px; }
+  .dest { color:var(--fg); background:color-mix(in srgb, var(--accent) 10%, transparent); padding:8px 10px; border-radius:8px; }
   ol { color:var(--muted); padding-left:20px; margin:16px 0 0; font-size:.92rem; }
   a { color:var(--accent); }
   small { display:block; margin-top:16px; color:var(--muted); font-size:.85rem; }
@@ -42,6 +50,7 @@ export function renderLoginPage(opts: { sealed: string; clientName?: string; glp
 <main>
   <h1>Connect to GLPI</h1>
   <p>${app} wants to use GLPI as you, with your own permissions.</p>
+  <p class="dest">Access will be given to <b>${host}</b>. Continue only if you started this from that app.</p>
   ${opts.error ? `<p class="err" role="alert">${escapeHtml(opts.error)}</p>` : ""}
   <form method="post" action="login" autocomplete="off">
     <input type="hidden" name="request" value="${escapeHtml(opts.sealed)}">

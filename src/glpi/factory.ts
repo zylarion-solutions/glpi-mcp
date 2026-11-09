@@ -12,7 +12,7 @@
  */
 import { createHash } from "node:crypto";
 import { ConfigError, hasLegacyCredentials, hasOAuthCredentials, type Config } from "../config.js";
-import type { FetchLike } from "./http.js";
+import { GlpiApiError, type FetchLike } from "./http.js";
 import { HlapiBackend } from "./hlapi.js";
 import { LegacyBackend } from "./legacy.js";
 import { UnsupportedFeatureError, type GlpiBackend } from "./types.js";
@@ -113,12 +113,21 @@ export class BackendProvider implements BackendSource {
 /** Backend acting as one GLPI user, through the legacy API and that user's personal API token. */
 export class UserBackend implements BackendSource {
   readonly identity = "user" as const;
-  constructor(private readonly backend: LegacyBackend) {}
+  constructor(
+    private readonly backend: LegacyBackend,
+    private readonly onRejected: () => void = () => {},
+  ) {}
   async get(): Promise<GlpiBackend> {
     return this.backend;
   }
   async run<T>(fn: (b: GlpiBackend) => Promise<T>): Promise<T> {
-    return fn(this.backend);
+    try {
+      return await fn(this.backend);
+    } catch (err) {
+      // GLPI refused the token itself: forget it so it holds no slot in the pool.
+      if (err instanceof GlpiApiError && err.path === "initSession") this.onRejected();
+      throw err;
+    }
   }
   async close(): Promise<void> {
     /* owned by the pool */
@@ -152,7 +161,10 @@ export class UserBackendPool {
       this.entries.set(key, entry);
     }
     entry.lastUsed = Date.now();
-    return new UserBackend(entry.backend);
+    const current = entry;
+    return new UserBackend(entry.backend, () => {
+      if (this.entries.get(key) === current) this.entries.delete(key);
+    });
   }
 
   get size(): number {
