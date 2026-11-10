@@ -37,34 +37,51 @@ export type FetchLike = typeof fetch;
 export async function httpRequest<T = unknown>(
   fetchImpl: FetchLike,
   url: string,
-  init: RequestInit & { timeoutMs: number },
+  init: RequestInit & { timeoutMs: number; binary?: boolean; maxBytes?: number },
 ): Promise<HttpResponse<T>> {
-  const { timeoutMs, ...rest } = init;
+  const { timeoutMs, binary, maxBytes, ...rest } = init;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  let res: Response;
   try {
-    res = await fetchImpl(url, { ...rest, signal: controller.signal, redirect: "manual" });
+    let res: Response;
+    try {
+      res = await fetchImpl(url, { ...rest, signal: controller.signal, redirect: "manual" });
+    } catch (err) {
+      if ((err as Error).name === "AbortError") {
+        throw new Error(`GLPI did not answer within ${timeoutMs} ms (${init.method ?? "GET"} ${redactUrl(url)})`);
+      }
+      throw new Error(`Could not reach GLPI at ${redactUrl(url)}: ${(err as Error).message}`);
+    }
+    if (binary && res.status < 400) {
+      const declared = Number(res.headers.get("content-length") ?? NaN);
+      if (maxBytes !== undefined && Number.isFinite(declared) && declared > maxBytes) {
+        controller.abort();
+        throw new Error(`File is ${declared} bytes, over the ${maxBytes} byte limit`);
+      }
+      const bytes = Buffer.from(await res.arrayBuffer());
+      if (maxBytes !== undefined && bytes.length > maxBytes) {
+        throw new Error(`File is ${bytes.length} bytes, over the ${maxBytes} byte limit`);
+      }
+      return { status: res.status, headers: res.headers, body: bytes as T };
+    }
+    const text = await res.text();
+    let body: unknown = null;
+    if (text) {
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = text;
+      }
+    }
+    return { status: res.status, headers: res.headers, body: body as T };
   } catch (err) {
     if ((err as Error).name === "AbortError") {
       throw new Error(`GLPI did not answer within ${timeoutMs} ms (${init.method ?? "GET"} ${redactUrl(url)})`);
     }
-    throw new Error(`Could not reach GLPI at ${redactUrl(url)}: ${(err as Error).message}`);
+    throw err;
   } finally {
     clearTimeout(timer);
   }
-  const text = await res.text();
-  let body: unknown = text;
-  if (text) {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      body = text;
-    }
-  } else {
-    body = null;
-  }
-  return { status: res.status, headers: res.headers, body: body as T };
 }
 
 /** Never print tokens that might be in a query string. */

@@ -19,26 +19,28 @@ async function main() {
     return;
   }
   const config = loadConfig();
-  const provider = new BackendProvider(config);
 
+  console.error(
+    `[glpi-mcp] v${VERSION} -> ${config.glpiUrl} (api: ${config.apiMode}, ` +
+      `${config.readOnly ? "read-only" : config.allowDelete ? "read-write + delete" : "read-write"}` +
+      `${config.transport === "http" ? `, http auth: ${config.http.authMode}` : ""})`,
+  );
+
+  let close: () => Promise<void>;
+  if (config.transport === "http") {
+    ({ close } = await startHttp(config));
+  } else {
+    const provider = new BackendProvider(config);
+    const server = createServer(config, provider);
+    await server.connect(new StdioServerTransport());
+    close = () => provider.close();
+  }
   const shutdown = async () => {
-    await provider.close();
+    await close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-
-  console.error(
-    `[glpi-mcp] v${VERSION} -> ${config.glpiUrl} (api: ${config.apiMode}, ` +
-      `${config.readOnly ? "read-only" : config.allowDelete ? "read-write + delete" : "read-write"})`,
-  );
-
-  if (config.transport === "http") {
-    await startHttp(config, provider);
-  } else {
-    const server = createServer(config, provider);
-    await server.connect(new StdioServerTransport());
-  }
 }
 
 main().catch((err) => {
