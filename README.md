@@ -175,6 +175,9 @@ Tools act as the service account. To let each client act as its own GLPI user, s
 
 #### Option B — OAuth (claude.ai custom connectors, everyone as themselves)
 
+> Step-by-step for the most common setup, glpi-mcp on the same server as GLPI behind its existing
+> Apache or Nginx: **[docs/deploy.md](docs/deploy.md)** (ready-made files in [`deploy/`](deploy/)).
+
 ```sh
 MCP_TRANSPORT=http
 MCP_AUTH_MODE=oauth

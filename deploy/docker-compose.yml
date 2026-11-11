@@ -1,0 +1,45 @@
+# glpi-mcp next to GLPI on the same host, behind the web server that already serves GLPI.
+#
+# - Listens on 127.0.0.1:8000 only; Apache or Nginx publishes it over HTTPS (see apache.conf / nginx.conf).
+# - Host networking lets it reach GLPI on 127.0.0.1, so GLPI's default API client
+#   ("full access from localhost") works and the GLPI API never needs to be exposed.
+# - OAuth mode: each person signs in with their own GLPI API token (claude.ai custom connectors).
+#
+# Usage (from this folder):  cp .env.example .env && edit .env && docker compose up -d --build
+# Full guide: ../docs/deploy.md
+
+services:
+  glpi-mcp:
+    build: ..
+    image: glpi-mcp:local
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      MCP_TRANSPORT: http
+      MCP_HTTP_HOST: 127.0.0.1
+      MCP_HTTP_PORT: "8000"
+      MCP_AUTH_MODE: oauth
+      MCP_TRUST_PROXY: "1"
+      MCP_OAUTH_STATE_FILE: /data/oauth-state.bin
+    # When GLPI_URL is GLPI's public https name, resolve it to this host so calls stay local
+    # (and come from 127.0.0.1). Replace with your GLPI host name, or remove if GLPI_URL is http://127.0.0.1.
+    extra_hosts:
+      - "servicedesk.example.com:127.0.0.1"
+    volumes:
+      - glpi-mcp-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  glpi-mcp-data:

@@ -6,3 +6,7 @@ coverage
 .env
 .env.*
 test
+**/.env
+**/.env.*
+deploy
+docs
